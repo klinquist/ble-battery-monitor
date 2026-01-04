@@ -1,0 +1,26 @@
+{
+  "schedule": {
+    "timeZone": "America/Los_Angeles",
+    "hour": 8,
+    "minute": 0
+  },
+  "lowSocThreshold": 50,
+  "pushover": {
+    "enabled": true,
+    "userKey": "YOUR_PUSHOVER_USER_KEY",
+    "appToken": "YOUR_PUSHOVER_APP_TOKEN",
+    "title": "Vehicle Battery Low"
+  },
+  "devices": [
+    {
+      "name": "Vehicle A",
+      "type": "bm6",
+      "address": "aa:bb:cc:dd:ee:ff"
+    },
+    {
+      "name": "Vehicle B",
+      "type": "bm7",
+      "address": "11:22:33:44:55:66"
+    }
+  ]
+}
