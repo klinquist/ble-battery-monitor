@@ -5,7 +5,6 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
-const { createBluetooth } = require("node-ble");
 const Pushover = require("node-pushover");
 
 const BM6_KEY = Buffer.from([108, 101, 97, 103, 101, 110, 100, 255, 254, 48, 49, 48, 48, 48, 48, 57]);
@@ -171,19 +170,23 @@ function normalizeAddress(address) {
   return String(address).toLowerCase();
 }
 
+function isBmDeviceName(name) {
+  return name === "BM6" || name === "BM300 Pro";
+}
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function ensurePowered(adapter) {
+async function ensurePoweredBluez(adapter) {
   const powered = await adapter.isPowered();
   if (!powered) {
     throw new Error("Bluetooth adapter is not powered on.");
   }
 }
 
-async function scanDevices(adapter, scanMs) {
-  await ensurePowered(adapter);
+async function scanDevicesBluez(adapter, scanMs) {
+  await ensurePoweredBluez(adapter);
   const wasDiscovering = await adapter.isDiscovering();
   if (!wasDiscovering) {
     await adapter.startDiscovery();
@@ -201,7 +204,7 @@ async function scanDevices(adapter, scanMs) {
     } catch (err) {
       name = "";
     }
-    if (name === "BM6" || name === "BM300 Pro") {
+    if (isBmDeviceName(name)) {
       let rssi = null;
       try {
         rssi = await device.getRSSI();
@@ -229,11 +232,11 @@ async function scanDevices(adapter, scanMs) {
   return results;
 }
 
-async function findDevicesByAddress(adapter, addresses, scanMs) {
+async function findDevicesByAddressBluez(adapter, addresses, scanMs) {
   const targets = addresses.map(normalizeAddress);
   const found = new Map();
 
-  await ensurePowered(adapter);
+  await ensurePoweredBluez(adapter);
   const wasDiscovering = await adapter.isDiscovering();
   if (!wasDiscovering) {
     await adapter.startDiscovery();
@@ -261,6 +264,155 @@ async function findDevicesByAddress(adapter, addresses, scanMs) {
   }
 
   return found;
+}
+
+function waitForNobleState(noble, timeoutMs) {
+  if (noble.state && noble.state !== "unknown") {
+    return Promise.resolve(noble.state);
+  }
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve(noble.state || "unknown");
+    }, timeoutMs);
+
+    const onChange = (state) => {
+      cleanup();
+      resolve(state);
+    };
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      noble.removeListener("stateChange", onChange);
+    };
+
+    noble.on("stateChange", onChange);
+  });
+}
+
+async function ensureNoblePowered(noble) {
+  if (noble.state === "poweredOn") {
+    return;
+  }
+  const state = await waitForNobleState(noble, 5000);
+  if (state !== "poweredOn") {
+    if (state === "unauthorized") {
+      throw new Error("Bluetooth permission denied. Allow Bluetooth access for this process.");
+    }
+    if (state === "poweredOff") {
+      throw new Error("Bluetooth adapter is powered off.");
+    }
+    if (state === "unsupported") {
+      throw new Error("Bluetooth is not supported on this system.");
+    }
+    throw new Error(`Bluetooth adapter is not powered on (state: ${state}).`);
+  }
+}
+
+function startNobleScan(noble) {
+  return new Promise((resolve, reject) => {
+    noble.startScanning([], true, (err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function stopNobleScan(noble) {
+  try {
+    noble.stopScanning();
+  } catch (err) {
+    // Ignore stop scan errors.
+  }
+}
+
+function getNobleAddress(peripheral) {
+  return normalizeAddress(peripheral.id || peripheral.address);
+}
+
+function getNobleName(peripheral) {
+  return String(peripheral.advertisement && peripheral.advertisement.localName || "").trim();
+}
+
+async function scanDevicesNoble(noble, scanMs) {
+  await ensureNoblePowered(noble);
+  stopNobleScan(noble);
+  const found = new Map();
+
+  const onDiscover = (peripheral) => {
+    const name = getNobleName(peripheral);
+    if (!isBmDeviceName(name)) {
+      return;
+    }
+    const address = getNobleAddress(peripheral);
+    if (!address) {
+      return;
+    }
+    found.set(address, {
+      address,
+      rssi: peripheral.rssi,
+      name,
+    });
+  };
+
+  noble.on("discover", onDiscover);
+  try {
+    await startNobleScan(noble);
+    await wait(scanMs);
+  } finally {
+    stopNobleScan(noble);
+    noble.removeListener("discover", onDiscover);
+  }
+
+  return Array.from(found.values());
+}
+
+async function findDevicesByAddressNoble(noble, addresses, scanMs) {
+  const targetSet = new Set(addresses.map(normalizeAddress).filter(Boolean));
+  const found = new Map();
+
+  if (!targetSet.size) {
+    return found;
+  }
+
+  await ensureNoblePowered(noble);
+  stopNobleScan(noble);
+
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      stopNobleScan(noble);
+      noble.removeListener("discover", onDiscover);
+      resolve(found);
+    };
+
+    const timeout = setTimeout(() => {
+      finish();
+    }, scanMs);
+
+    const onDiscover = (peripheral) => {
+      const address = getNobleAddress(peripheral);
+      if (!address || !targetSet.has(address)) {
+        return;
+      }
+      if (!found.has(address)) {
+        found.set(address, peripheral);
+      }
+      if (found.size === targetSet.size) {
+        clearTimeout(timeout);
+        finish();
+      }
+    };
+
+    noble.on("discover", onDiscover);
+    startNobleScan(noble).catch((err) => {
+      clearTimeout(timeout);
+      noble.removeListener("discover", onDiscover);
+      reject(err);
+    });
+  });
 }
 
 function encryptCommand(key) {
@@ -345,7 +497,7 @@ async function findCharacteristicByUuid(gattServer, shortUuid) {
   return null;
 }
 
-async function readBatteryData(device, model, readTimeoutMs) {
+async function readBatteryDataBluez(device, model, readTimeoutMs) {
   const key = model === "bm6" ? BM6_KEY : BM7_KEY;
   const command = encryptCommand(key);
 
@@ -393,6 +545,119 @@ async function readBatteryData(device, model, readTimeoutMs) {
   } finally {
     try {
       await device.disconnect();
+    } catch (err) {
+      // Ignore disconnect errors.
+    }
+  }
+}
+
+function connectPeripheral(peripheral) {
+  return new Promise((resolve, reject) => {
+    peripheral.connect((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function disconnectPeripheral(peripheral) {
+  return new Promise((resolve) => {
+    peripheral.disconnect(() => {
+      resolve();
+    });
+  });
+}
+
+function discoverCharacteristics(peripheral) {
+  return new Promise((resolve, reject) => {
+    peripheral.discoverAllServicesAndCharacteristics((err, services, characteristics) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve(characteristics || []);
+    });
+  });
+}
+
+function subscribeCharacteristic(characteristic) {
+  return new Promise((resolve, reject) => {
+    characteristic.subscribe((err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+function writeCharacteristic(characteristic, buffer) {
+  return new Promise((resolve, reject) => {
+    characteristic.write(buffer, false, (err) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function readBatteryDataNoble(peripheral, model, readTimeoutMs) {
+  const key = model === "bm6" ? BM6_KEY : BM7_KEY;
+  const command = encryptCommand(key);
+
+  let notifyChar = null;
+  try {
+    await connectPeripheral(peripheral);
+    const characteristics = await discoverCharacteristics(peripheral);
+    const writeChar = characteristics.find((char) => uuidMatches(char.uuid, WRITE_UUID));
+    notifyChar = characteristics.find((char) => uuidMatches(char.uuid, NOTIFY_UUID));
+
+    if (!writeChar || !notifyChar) {
+      throw new Error(`Missing required characteristics on ${model.toUpperCase()}.`);
+    }
+
+    const dataPromise = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Timed out waiting for ${model.toUpperCase()} data.`));
+      }, readTimeoutMs);
+
+      function onData(buffer) {
+        const messageHex = decryptPayload(buffer, key);
+        const parsed = parseBatteryMessage(messageHex, model);
+        if (parsed) {
+          cleanup();
+          resolve(parsed);
+        }
+      }
+
+      function cleanup() {
+        clearTimeout(timeout);
+        notifyChar.removeListener("data", onData);
+        if (typeof notifyChar.unsubscribe === "function") {
+          notifyChar.unsubscribe(() => {});
+        }
+      }
+
+      notifyChar.on("data", onData);
+      subscribeCharacteristic(notifyChar)
+        .then(() => writeCharacteristic(writeChar, command))
+        .catch((err) => {
+          cleanup();
+          reject(err);
+        });
+    });
+
+    return await dataPromise;
+  } finally {
+    try {
+      await disconnectPeripheral(peripheral);
     } catch (err) {
       // Ignore disconnect errors.
     }
@@ -453,6 +718,32 @@ function outputMappedResults(results, format, timestamp) {
   });
 }
 
+function logSocSummary(results, format) {
+  if (!Array.isArray(results) || results.length === 0) {
+    const message = "Battery percentages: unavailable";
+    if (format === "json") {
+      console.error(message);
+      return;
+    }
+    console.log(message);
+    return;
+  }
+
+  const summary = results
+    .map((item) => {
+      const name = item.name || item.address || "Unknown";
+      const soc = typeof item.soc === "number" ? `${item.soc}%` : "n/a";
+      return `${name}: ${soc}`;
+    })
+    .join(", ");
+  const message = `Battery percentages: ${summary}`;
+  if (format === "json") {
+    console.error(message);
+    return;
+  }
+  console.log(message);
+}
+
 function askQuestion(rl, prompt, defaultValue) {
   const suffix = defaultValue ? ` [${defaultValue}]` : "";
   return new Promise((resolve) => {
@@ -481,7 +772,58 @@ function parseBoolean(value, defaultValue) {
   return defaultValue;
 }
 
+async function createBleClient() {
+  if (process.platform === "darwin") {
+    return createNobleClient();
+  }
+  return createBluezClient();
+}
+
+async function createBluezClient() {
+  const { createBluetooth } = require("node-ble");
+  const { bluetooth, destroy } = createBluetooth();
+  const adapter = await bluetooth.defaultAdapter();
+  return {
+    scanDevices: (scanMs) => scanDevicesBluez(adapter, scanMs),
+    findDevicesByAddress: (addresses, scanMs) =>
+      findDevicesByAddressBluez(adapter, addresses, scanMs),
+    readBatteryData: (device, model, readTimeoutMs) =>
+      readBatteryDataBluez(device, model, readTimeoutMs),
+    destroy,
+  };
+}
+
+function createNobleClient() {
+  let noble;
+  try {
+    noble = require("@abandonware/noble");
+  } catch (err) {
+    throw new Error("Missing @abandonware/noble dependency. Run npm install.");
+  }
+
+  return {
+    scanDevices: (scanMs) => scanDevicesNoble(noble, scanMs),
+    findDevicesByAddress: (addresses, scanMs) =>
+      findDevicesByAddressNoble(noble, addresses, scanMs),
+    readBatteryData: (device, model, readTimeoutMs) =>
+      readBatteryDataNoble(device, model, readTimeoutMs),
+    destroy: async () => {
+      stopNobleScan(noble);
+    },
+  };
+}
+
+async function withBleClient(task) {
+  const client = await createBleClient();
+  try {
+    return await task(client);
+  } finally {
+    await client.destroy();
+  }
+}
+
 async function generateConfig(args) {
+  let defaults = normalizeConfig({});
   if (fs.existsSync(CONFIG_PATH)) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     try {
@@ -493,68 +835,83 @@ async function generateConfig(args) {
     } finally {
       rl.close();
     }
+    try {
+      defaults = normalizeConfig(readJsonFile(CONFIG_PATH));
+    } catch (err) {
+      console.log(`Unable to read ${CONFIG_PATH}, using defaults.`);
+    }
   }
 
-  const { bluetooth, destroy } = createBluetooth();
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const adapter = await bluetooth.defaultAdapter();
-    const devices = await scanDevices(adapter, args.scanMs);
-    if (!devices.length) {
-      throw new Error("No BM6 or BM7 devices found during scan.");
+  const deviceNameByAddress = new Map();
+  for (const device of defaults.devices) {
+    const address = normalizeAddress(device.address);
+    if (!address) {
+      continue;
     }
+    const name = String(device.name || "").trim();
+    if (name) {
+      deviceNameByAddress.set(address, name);
+    }
+  }
 
-    const deviceEntries = [];
-    for (const device of devices) {
-      const type = device.name === "BM6" ? "bm6" : "bm7";
-      const defaultName = device.name === "BM6" ? `BM6 ${device.address}` : `BM7 ${device.address}`;
-      const name = await askQuestion(
+  return withBleClient(async (ble) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      const devices = await ble.scanDevices(args.scanMs);
+      if (!devices.length) {
+        throw new Error("No BM6 or BM7 devices found during scan.");
+      }
+
+      const deviceEntries = [];
+      for (const device of devices) {
+        const type = device.name === "BM6" ? "bm6" : "bm7";
+        const defaultName =
+          deviceNameByAddress.get(normalizeAddress(device.address)) ||
+          (device.name === "BM6" ? `BM6 ${device.address}` : `BM7 ${device.address}`);
+        const name = await askQuestion(
+          rl,
+          `Friendly name for ${device.name} (${device.address})`,
+          defaultName
+        );
+        deviceEntries.push({
+          name,
+          type,
+          address: device.address,
+        });
+      }
+
+      const thresholdInput = await askQuestion(
         rl,
-        `Friendly name for ${device.name} (${device.address})`,
-        defaultName
+        "Low SoC threshold percentage",
+        String(defaults.lowSocThreshold)
       );
-      deviceEntries.push({
-        name,
-        type,
-        address: device.address,
-      });
+      const thresholdValue = Number(thresholdInput);
+      const lowSocThreshold = Number.isFinite(thresholdValue)
+        ? thresholdValue
+        : defaults.lowSocThreshold;
+
+      const userKey = await askQuestion(rl, "Pushover user key", defaults.pushover.userKey);
+      const appToken = await askQuestion(rl, "Pushover app token", defaults.pushover.appToken);
+      const pushoverEnabled = Boolean(userKey && appToken) && defaults.pushover.enabled;
+
+      const config = {
+        schedule: { ...defaults.schedule },
+        lowSocThreshold,
+        pushover: {
+          enabled: pushoverEnabled,
+          userKey,
+          appToken,
+          title: defaults.pushover.title,
+        },
+        devices: deviceEntries,
+      };
+
+      fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+      console.log(`Wrote ${CONFIG_PATH}`);
+    } finally {
+      rl.close();
     }
-
-    const thresholdInput = await askQuestion(
-      rl,
-      "Low SoC threshold percentage",
-      String(DEFAULT_LOW_SOC_THRESHOLD)
-    );
-    const thresholdValue = Number(thresholdInput);
-    const lowSocThreshold = Number.isFinite(thresholdValue)
-      ? thresholdValue
-      : DEFAULT_LOW_SOC_THRESHOLD;
-
-    const userKey = await askQuestion(rl, "Pushover user key", "");
-    const appToken = await askQuestion(rl, "Pushover app token", "");
-
-    const config = {
-      schedule: {
-        timeZone: DEFAULT_TIME_ZONE,
-        hour: DEFAULT_SCHEDULE_HOUR,
-        minute: DEFAULT_SCHEDULE_MINUTE,
-      },
-      lowSocThreshold,
-      pushover: {
-        enabled: Boolean(userKey && appToken),
-        userKey,
-        appToken,
-        title: DEFAULT_PUSHOVER_TITLE,
-      },
-      devices: deviceEntries,
-    };
-
-    fs.writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-    console.log(`Wrote ${CONFIG_PATH}`);
-  } finally {
-    rl.close();
-    destroy();
-  }
+  });
 }
 
 function getZonedParts(timeZone, date) {
@@ -676,9 +1033,9 @@ async function notifyLowSoc(results, config, notification) {
   await sendPushover(config.pushover.title, message, notification.pushClient);
 }
 
-async function readDeviceMap(adapter, mapEntries, args, config, notification) {
+async function readDeviceMap(ble, mapEntries, args, config, notification) {
   const addresses = mapEntries.map((entry) => entry.address);
-  const devices = await findDevicesByAddress(adapter, addresses, args.connectScanMs);
+  const devices = await ble.findDevicesByAddress(addresses, args.connectScanMs);
   const timestamp = new Date().toISOString();
   const results = [];
 
@@ -688,7 +1045,7 @@ async function readDeviceMap(adapter, mapEntries, args, config, notification) {
     if (!device) {
       throw new Error(`${entry.type.toUpperCase()} device not found for address ${entry.address}.`);
     }
-    const data = await readBatteryData(device, entry.type, args.readTimeoutMs);
+    const data = await ble.readBatteryData(device, entry.type, args.readTimeoutMs);
     results.push({
       name: entry.name,
       type: entry.type,
@@ -700,6 +1057,7 @@ async function readDeviceMap(adapter, mapEntries, args, config, notification) {
 
   outputMappedResults(results, args.format, timestamp);
   await notifyLowSoc(results, config, notification);
+  return results;
 }
 
 async function main() {
@@ -717,15 +1075,11 @@ async function main() {
   }
 
   if (args.scan) {
-    const { bluetooth, destroy } = createBluetooth();
-    try {
-      const adapter = await bluetooth.defaultAdapter();
-      const devices = await scanDevices(adapter, args.scanMs);
+    await withBleClient(async (ble) => {
+      const devices = await ble.scanDevices(args.scanMs);
       outputScanResults(devices, args.format);
-      return;
-    } finally {
-      destroy();
-    }
+    });
+    return;
   }
 
   if (args.generateConfig) {
@@ -739,15 +1093,10 @@ async function main() {
       throw new Error("No devices configured. Update config.json or run --generate-config.");
     }
     const notification = buildNotification(config, args);
-    const runOnce = async () => {
-      const { bluetooth, destroy } = createBluetooth();
-      try {
-        const adapter = await bluetooth.defaultAdapter();
-        await readDeviceMap(adapter, config.devices, args, config, notification);
-      } finally {
-        destroy();
-      }
-    };
+    const runOnce = async () =>
+      await withBleClient(async (ble) =>
+        await readDeviceMap(ble, config.devices, args, config, notification)
+      );
 
     if (args.once) {
       await runOnce();
@@ -769,7 +1118,10 @@ async function main() {
       config.schedule.timeZone,
       config.schedule.hour,
       config.schedule.minute,
-      runOnce
+      async () => {
+        const results = await runOnce();
+        logSocSummary(results, args.format);
+      }
     );
     return;
   }
@@ -780,11 +1132,9 @@ async function main() {
     return;
   }
 
-  const { bluetooth, destroy } = createBluetooth();
-  try {
-    const adapter = await bluetooth.defaultAdapter();
+  await withBleClient(async (ble) => {
     const addresses = [args.bm6, args.bm7];
-    const devices = await findDevicesByAddress(adapter, addresses, args.connectScanMs);
+    const devices = await ble.findDevicesByAddress(addresses, args.connectScanMs);
 
     const bm6Device = devices.get(normalizeAddress(args.bm6));
     const bm7Device = devices.get(normalizeAddress(args.bm7));
@@ -796,8 +1146,8 @@ async function main() {
       throw new Error(`BM7 device not found for address ${args.bm7}.`);
     }
 
-    const bm6Data = await readBatteryData(bm6Device, "bm6", args.readTimeoutMs);
-    const bm7Data = await readBatteryData(bm7Device, "bm7", args.readTimeoutMs);
+    const bm6Data = await ble.readBatteryData(bm6Device, "bm6", args.readTimeoutMs);
+    const bm7Data = await ble.readBatteryData(bm7Device, "bm7", args.readTimeoutMs);
 
     outputReadResults(
       {
@@ -806,9 +1156,7 @@ async function main() {
       },
       args.format
     );
-  } finally {
-    destroy();
-  }
+  });
 }
 
 main().catch((err) => {

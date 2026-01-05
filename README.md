@@ -2,19 +2,22 @@
 
 I bought a few inexpensive battery monitors from AliExpress and wanted a simple way to check my vehicles' battery health remotely. While there are existing GitHub projects that show how to integrate these devices with ESPHome and Home Assistant, this project keeps things minimal.
 
-It reads battery voltage, temperature, and state of charge from BM6 or BM7 BLE monitors, including the Ancel BM300 Pro, using Node.js and BlueZ. It runs scheduled daily checks and sends a push notification via Pushover when the battery is low.
+It reads battery voltage, temperature, and state of charge from BM6 or BM7 BLE monitors, including the Ancel BM300 Pro, using Node.js with BlueZ on Linux or CoreBluetooth on macOS. It runs scheduled daily checks and sends a push notification via Pushover when the battery is low.
 
 ## Requirements
 
-- Linux with BlueZ (tested on Raspberry Pi/Raspbian).
-- Node.js 16+.
+- Linux with BlueZ (tested on Raspberry Pi/Raspbian) or macOS.
+- Node.js 16+ (macOS works best on an LTS release).
 - Bluetooth adapter enabled.
+- On macOS, grant Bluetooth permission to the terminal/Node process.
 
 ## Install
 
 ```bash
 npm install
 ```
+
+On Linux, macOS-only dependencies are optional; if `@abandonware/noble` fails to build on Raspberry Pi, `npm install` will still succeed.
 
 ## Config
 
@@ -40,6 +43,8 @@ Create `config.json` and keep it out of git. A sample file is provided at `confi
   ]
 }
 ```
+
+On macOS, CoreBluetooth does not expose MAC addresses. Use the UUID-style `address` values shown by `--scan` or `--generate-config`.
 
 ## Generate config interactively
 

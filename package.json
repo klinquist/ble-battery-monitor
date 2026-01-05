@@ -11,5 +11,8 @@
   "dependencies": {
     "node-ble": "^1.13.0",
     "node-pushover": "^1.0.0"
+  },
+  "optionalDependencies": {
+    "@abandonware/noble": "^1.9.2-15"
   }
 }
