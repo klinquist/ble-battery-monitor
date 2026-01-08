@@ -918,6 +918,7 @@ function getZonedParts(timeZone, date) {
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone,
     hour12: false,
+    hourCycle: "h23",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -933,21 +934,45 @@ function getZonedParts(timeZone, date) {
     }
   });
 
+  let year = Number(lookup.year);
+  let month = Number(lookup.month);
+  let day = Number(lookup.day);
+  let hour = Number(lookup.hour);
+  const minute = Number(lookup.minute);
+  const second = Number(lookup.second);
+
+  if (hour === 24) {
+    const midnight = new Date(Date.UTC(year, month - 1, day));
+    midnight.setUTCDate(midnight.getUTCDate() + 1);
+    year = midnight.getUTCFullYear();
+    month = midnight.getUTCMonth() + 1;
+    day = midnight.getUTCDate();
+    hour = 0;
+  }
+
   return {
-    year: Number(lookup.year),
-    month: Number(lookup.month),
-    day: Number(lookup.day),
-    hour: Number(lookup.hour),
-    minute: Number(lookup.minute),
-    second: Number(lookup.second),
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
   };
 }
 
 function makeZonedDate(timeZone, year, month, day, hour, minute, second) {
   const utcDate = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
-  const zonedDate = new Date(utcDate.toLocaleString("en-US", { timeZone }));
-  const offsetMs = utcDate.getTime() - zonedDate.getTime();
-  return new Date(Date.UTC(year, month - 1, day, hour, minute, second) + offsetMs);
+  const parts = getZonedParts(timeZone, utcDate);
+  const asUtc = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second
+  );
+  const offsetMs = asUtc - utcDate.getTime();
+  return new Date(utcDate.getTime() - offsetMs);
 }
 
 function getNextRunDate(timeZone, hour, minute) {
@@ -965,16 +990,11 @@ function getNextRunDate(timeZone, hour, minute) {
 }
 
 function formatZonedTime(timeZone, date) {
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    hour12: false,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(date);
+  const parts = getZonedParts(timeZone, date);
+  const pad2 = (value) => String(value).padStart(2, "0");
+  return `${pad2(parts.month)}/${pad2(parts.day)}/${parts.year}, ${pad2(parts.hour)}:${pad2(
+    parts.minute
+  )}:${pad2(parts.second)}`;
 }
 
 function scheduleDailyAt(timeZone, hour, minute, task) {
