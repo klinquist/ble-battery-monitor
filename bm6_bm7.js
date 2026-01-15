@@ -1059,6 +1059,20 @@ async function readDeviceMap(ble, mapEntries, args, config, notification) {
   const timestamp = new Date().toISOString();
   const results = [];
 
+  const missingEntries = mapEntries.filter((entry) => {
+    const addressKey = normalizeAddress(entry.address);
+    return !devices.get(addressKey);
+  });
+
+  if (missingEntries.length) {
+    const missingList = missingEntries
+      .map((entry) => `${entry.name || entry.type.toUpperCase()} (${entry.address})`)
+      .join(", ");
+    throw new Error(
+      `Device not found after ${args.connectScanMs}ms scan: ${missingList}.`
+    );
+  }
+
   for (const entry of mapEntries) {
     const addressKey = normalizeAddress(entry.address);
     const device = devices.get(addressKey);
