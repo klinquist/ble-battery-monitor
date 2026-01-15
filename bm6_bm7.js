@@ -484,6 +484,38 @@ function parseBatteryMessage(messageHex, model) {
   };
 }
 
+function withTimeout(promise, timeoutMs, message) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return promise;
+  }
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(message));
+    }, timeoutMs);
+
+    promise
+      .then((value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      })
+      .catch((err) => {
+        clearTimeout(timeout);
+        reject(err);
+      });
+  });
+}
+
+function isDeviceUnreachableError(err) {
+  const message = String(err && err.message ? err.message : err).toLowerCase();
+  return (
+    message.includes("timed out waiting") ||
+    message.includes("timed out connecting") ||
+    message.includes("not connected") ||
+    message.includes("failed to connect") ||
+    message.includes("software caused connection abort")
+  );
+}
+
 async function findCharacteristicByUuid(gattServer, shortUuid) {
   const services = await gattServer.services();
   for (const serviceId of services) {
@@ -503,7 +535,11 @@ async function readBatteryDataBluez(device, model, readTimeoutMs) {
 
   let notifyChar = null;
   try {
-    await device.connect();
+    await withTimeout(
+      device.connect(),
+      readTimeoutMs,
+      `Timed out connecting to ${model.toUpperCase()}.`
+    );
     const gattServer = await device.gatt();
     const writeChar = await findCharacteristicByUuid(gattServer, WRITE_UUID);
     notifyChar = await findCharacteristicByUuid(gattServer, NOTIFY_UUID);
@@ -551,16 +587,20 @@ async function readBatteryDataBluez(device, model, readTimeoutMs) {
   }
 }
 
-function connectPeripheral(peripheral) {
-  return new Promise((resolve, reject) => {
-    peripheral.connect((err) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve();
-    });
-  });
+function connectPeripheral(peripheral, timeoutMs, label) {
+  return withTimeout(
+    new Promise((resolve, reject) => {
+      peripheral.connect((err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve();
+      });
+    }),
+    timeoutMs,
+    `Timed out connecting to ${label}.`
+  );
 }
 
 function disconnectPeripheral(peripheral) {
@@ -613,7 +653,7 @@ async function readBatteryDataNoble(peripheral, model, readTimeoutMs) {
 
   let notifyChar = null;
   try {
-    await connectPeripheral(peripheral);
+    await connectPeripheral(peripheral, readTimeoutMs, model.toUpperCase());
     const characteristics = await discoverCharacteristics(peripheral);
     const writeChar = characteristics.find((char) => uuidMatches(char.uuid, WRITE_UUID));
     notifyChar = characteristics.find((char) => uuidMatches(char.uuid, NOTIFY_UUID));
@@ -1068,7 +1108,7 @@ async function readDeviceMap(ble, mapEntries, args, config, notification) {
     const missingList = missingEntries
       .map((entry) => `${entry.name || entry.type.toUpperCase()} (${entry.address})`)
       .join(", ");
-    throw new Error(
+    console.error(
       `Device not found after ${args.connectScanMs}ms scan: ${missingList}.`
     );
   }
@@ -1077,9 +1117,19 @@ async function readDeviceMap(ble, mapEntries, args, config, notification) {
     const addressKey = normalizeAddress(entry.address);
     const device = devices.get(addressKey);
     if (!device) {
-      throw new Error(`${entry.type.toUpperCase()} device not found for address ${entry.address}.`);
+      continue;
     }
-    const data = await ble.readBatteryData(device, entry.type, args.readTimeoutMs);
+    const label = `${entry.name || entry.type.toUpperCase()} (${entry.address})`;
+    let data;
+    try {
+      data = await ble.readBatteryData(device, entry.type, args.readTimeoutMs);
+    } catch (err) {
+      if (isDeviceUnreachableError(err)) {
+        console.error(`Device not found or unreachable: ${label}.`);
+        continue;
+      }
+      throw err;
+    }
     results.push({
       name: entry.name,
       type: entry.type,
@@ -1087,6 +1137,11 @@ async function readDeviceMap(ble, mapEntries, args, config, notification) {
       timestamp,
       ...data,
     });
+  }
+
+  if (!results.length) {
+    console.error("No devices responded; skipping output.");
+    return results;
   }
 
   outputMappedResults(results, args.format, timestamp);
@@ -1180,8 +1235,25 @@ async function main() {
       throw new Error(`BM7 device not found for address ${args.bm7}.`);
     }
 
-    const bm6Data = await ble.readBatteryData(bm6Device, "bm6", args.readTimeoutMs);
-    const bm7Data = await ble.readBatteryData(bm7Device, "bm7", args.readTimeoutMs);
+    let bm6Data;
+    try {
+      bm6Data = await ble.readBatteryData(bm6Device, "bm6", args.readTimeoutMs);
+    } catch (err) {
+      if (isDeviceUnreachableError(err)) {
+        throw new Error(`Device not found or unreachable: BM6 (${args.bm6}).`);
+      }
+      throw err;
+    }
+
+    let bm7Data;
+    try {
+      bm7Data = await ble.readBatteryData(bm7Device, "bm7", args.readTimeoutMs);
+    } catch (err) {
+      if (isDeviceUnreachableError(err)) {
+        throw new Error(`Device not found or unreachable: BM7 (${args.bm7}).`);
+      }
+      throw err;
+    }
 
     outputReadResults(
       {
