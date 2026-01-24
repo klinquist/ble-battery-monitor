@@ -26,6 +26,11 @@ const DEFAULT_PUSHOVER_TITLE = "Vehicle Battery Low";
 
 const CONFIG_PATH = path.join(__dirname, "config.json");
 const CONFIG_TEMPLATE_PATH = path.join(__dirname, "config.json.default");
+const HISTORY_PATH = path.join(__dirname, "battery_history.json");
+const HISTORY_VERSION = 1;
+const HISTORY_GRAPH_DAYS = 30;
+const HISTORY_MAX_DAYS = 400;
+const HISTORY_MISSING_CHAR = "·";
 
 function parseArgs(argv) {
   const args = {
@@ -105,7 +110,10 @@ function printUsage() {
     "  --read-timeout-ms <ms>Timeout waiting for data (default: 10000)",
     "  --interval-hours <h>  Interval for --map reads (overrides daily schedule)",
     "  --once                Run a single --map read and exit",
-    "  --screen              Print results only; disable push notifications",
+    "  --screen              Print results only; disable push notifications (with --once, history is not updated)",
+    "",
+    `Notes:`,
+    `  --map stores daily SoC readings in ${path.basename(HISTORY_PATH)} and prints a 30-day SoC history graph (ascii mode).`,
   ];
   console.log(usage.join("\n"));
 }
@@ -113,6 +121,58 @@ function printUsage() {
 function readJsonFile(filePath) {
   const raw = fs.readFileSync(filePath, "utf8");
   return JSON.parse(raw);
+}
+
+function normalizeHistory(history) {
+  const vehicles =
+    history && typeof history === "object" && history.vehicles && typeof history.vehicles === "object"
+      ? history.vehicles
+      : {};
+
+  const normalizedVehicles = {};
+  for (const [key, value] of Object.entries(vehicles)) {
+    const addressKey = normalizeAddress(key);
+    if (!addressKey) {
+      continue;
+    }
+    const readings = Array.isArray(value && value.readings) ? value.readings : [];
+    normalizedVehicles[addressKey] = {
+      name: String(value && value.name ? value.name : "").trim(),
+      type: value && (value.type === "bm6" || value.type === "bm7") ? value.type : "",
+      address: String(value && value.address ? value.address : key),
+      readings: readings
+        .filter((item) => item && typeof item === "object" && typeof item.date === "string")
+        .map((item) => ({
+          date: item.date,
+          timestamp: typeof item.timestamp === "string" ? item.timestamp : "",
+          soc: typeof item.soc === "number" ? item.soc : null,
+          voltage: typeof item.voltage === "number" ? item.voltage : null,
+          temperature: typeof item.temperature === "number" ? item.temperature : null,
+        })),
+    };
+  }
+
+  return {
+    version: HISTORY_VERSION,
+    updatedAt: history && typeof history.updatedAt === "string" ? history.updatedAt : "",
+    vehicles: normalizedVehicles,
+  };
+}
+
+function loadHistory(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return normalizeHistory({ version: HISTORY_VERSION, vehicles: {} });
+  }
+  try {
+    return normalizeHistory(readJsonFile(filePath));
+  } catch (err) {
+    console.error(`Unable to read ${filePath}; starting new history.`);
+    return normalizeHistory({ version: HISTORY_VERSION, vehicles: {} });
+  }
+}
+
+function saveHistory(filePath, history) {
+  fs.writeFileSync(filePath, `${JSON.stringify(history, null, 2)}\n`, "utf8");
 }
 
 function loadConfigOrThrow() {
@@ -168,6 +228,12 @@ function normalizeAddress(address) {
     return "";
   }
   return String(address).toLowerCase();
+}
+
+function getZonedDateKey(timeZone, date) {
+  const parts = getZonedParts(timeZone, date);
+  const pad2 = (value) => String(value).padStart(2, "0");
+  return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
 }
 
 function isBmDeviceName(name) {
@@ -758,6 +824,159 @@ function outputMappedResults(results, format, timestamp) {
   });
 }
 
+function getRecentZonedDateKeys(timeZone, days) {
+  const endDate = new Date();
+  const parts = getZonedParts(timeZone, endDate);
+  const baseLocalMidday = makeZonedDate(timeZone, parts.year, parts.month, parts.day, 12, 0, 0);
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  const keys = [];
+  for (let offset = days - 1; offset >= 0; offset -= 1) {
+    const date = new Date(baseLocalMidday.getTime() - offset * dayMs);
+    keys.push(getZonedDateKey(timeZone, date));
+  }
+
+  const unique = [];
+  const seen = new Set();
+  for (const key of keys) {
+    if (!seen.has(key)) {
+      unique.push(key);
+      seen.add(key);
+    }
+  }
+
+  if (unique.length >= days) {
+    return unique.slice(unique.length - days);
+  }
+
+  while (unique.length < days) {
+    const earliest = unique[0];
+    const [year, month, day] = earliest.split("-").map((value) => Number(value));
+    const earlier = makeZonedDate(timeZone, year, month, day - 1, 12, 0, 0);
+    unique.unshift(getZonedDateKey(timeZone, earlier));
+  }
+
+  return unique;
+}
+
+function upsertHistoryReading(history, timeZone, reading) {
+  const addressKey = normalizeAddress(reading.address);
+  if (!addressKey) {
+    return;
+  }
+
+  const timestamp = reading.timestamp || new Date().toISOString();
+  const dateKey = getZonedDateKey(timeZone, new Date(timestamp));
+
+  const vehicle = history.vehicles[addressKey] || {
+    name: "",
+    type: "",
+    address: reading.address,
+    readings: [],
+  };
+
+  if (reading.name) {
+    vehicle.name = reading.name;
+  }
+  if (reading.type) {
+    vehicle.type = reading.type;
+  }
+  if (reading.address) {
+    vehicle.address = reading.address;
+  }
+
+  const entry = {
+    date: dateKey,
+    timestamp,
+    soc: typeof reading.soc === "number" ? reading.soc : null,
+    voltage: typeof reading.voltage === "number" ? reading.voltage : null,
+    temperature: typeof reading.temperature === "number" ? reading.temperature : null,
+  };
+
+  const existingIndex = vehicle.readings.findIndex((item) => item.date === dateKey);
+  if (existingIndex >= 0) {
+    vehicle.readings[existingIndex] = entry;
+  } else {
+    vehicle.readings.push(entry);
+  }
+
+  vehicle.readings.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  if (vehicle.readings.length > HISTORY_MAX_DAYS) {
+    vehicle.readings = vehicle.readings.slice(vehicle.readings.length - HISTORY_MAX_DAYS);
+  }
+
+  history.vehicles[addressKey] = vehicle;
+  history.updatedAt = new Date().toISOString();
+}
+
+function addReadingsToHistory(history, timeZone, readings) {
+  if (!Array.isArray(readings)) {
+    return history;
+  }
+  readings.forEach((reading) => {
+    upsertHistoryReading(history, timeZone, reading);
+  });
+  return history;
+}
+
+function renderSocSparkline(dateKeys, socByDate) {
+  const blocks = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+  return dateKeys
+    .map((dateKey) => {
+      const soc = socByDate[dateKey];
+      if (typeof soc !== "number" || !Number.isFinite(soc)) {
+        return HISTORY_MISSING_CHAR;
+      }
+      const clamped = Math.max(0, Math.min(100, Math.round(soc)));
+      const index = Math.round((clamped / 100) * (blocks.length - 1));
+      return blocks[index];
+    })
+    .join("");
+}
+
+function outputSocHistoryGraphs(history, config, days) {
+  if (!config || !config.schedule || !config.schedule.timeZone) {
+    return;
+  }
+  const timeZone = config.schedule.timeZone;
+  const dateKeys = getRecentZonedDateKeys(timeZone, days);
+  if (!dateKeys.length) {
+    return;
+  }
+
+  const start = dateKeys[0];
+  const end = dateKeys[dateKeys.length - 1];
+  const title = `SoC history (last ${days} days, ${start}..${end}, missing=${HISTORY_MISSING_CHAR})`;
+  console.log(title);
+
+  const devices = Array.isArray(config.devices) ? config.devices : [];
+  const names = devices.map((device) => String(device.name || device.address || "Unknown"));
+  const longestName = names.reduce((maxLength, name) => Math.max(maxLength, name.length), 0);
+  const nameWidth = Math.max(6, Math.min(24, longestName));
+
+  devices.forEach((device) => {
+    const addressKey = normalizeAddress(device.address);
+    const vehicle = addressKey ? history.vehicles[addressKey] : null;
+    const readings = vehicle && Array.isArray(vehicle.readings) ? vehicle.readings : [];
+
+    const socByDate = {};
+    readings.forEach((entry) => {
+      if (entry && typeof entry.date === "string" && typeof entry.soc === "number") {
+        socByDate[entry.date] = entry.soc;
+      }
+    });
+
+    const latestEntry = readings.length ? readings[readings.length - 1] : null;
+    const latestSoc =
+      latestEntry && typeof latestEntry.soc === "number" ? `${Math.round(latestEntry.soc)}%` : "n/a";
+    const sparkline = renderSocSparkline(dateKeys, socByDate);
+    const name = String(device.name || device.address || "Unknown");
+    console.log(`${name.slice(0, nameWidth).padEnd(nameWidth)} ${latestSoc.padStart(4)} ${sparkline}`);
+  });
+
+  console.log("");
+}
+
 function logSocSummary(results, format) {
   if (!Array.isArray(results) || results.length === 0) {
     const message = "Battery percentages: unavailable";
@@ -1182,23 +1401,54 @@ async function main() {
       throw new Error("No devices configured. Update config.json or run --generate-config.");
     }
     const notification = buildNotification(config, args);
+    const shouldWriteHistory = !(args.once && args.screen);
     const runOnce = async () =>
       await withBleClient(async (ble) =>
         await readDeviceMap(ble, config.devices, args, config, notification)
       );
 
     if (args.once) {
-      await runOnce();
+      const results = await runOnce();
+      const history = addReadingsToHistory(loadHistory(HISTORY_PATH), config.schedule.timeZone, results);
+      if (shouldWriteHistory && results.length) {
+        saveHistory(HISTORY_PATH, history);
+      }
+      if (args.format === "ascii") {
+        outputSocHistoryGraphs(history, config, HISTORY_GRAPH_DAYS);
+      }
       return;
     }
 
     if (Number.isFinite(args.intervalHours) && args.intervalHours > 0) {
       const intervalMs = args.intervalHours * 60 * 60 * 1000;
-      await runOnce();
+      {
+        const results = await runOnce();
+        const history = addReadingsToHistory(loadHistory(HISTORY_PATH), config.schedule.timeZone, results);
+        if (shouldWriteHistory && results.length) {
+          saveHistory(HISTORY_PATH, history);
+        }
+        if (args.format === "ascii") {
+          outputSocHistoryGraphs(history, config, HISTORY_GRAPH_DAYS);
+        }
+      }
       setInterval(() => {
-        runOnce().catch((err) => {
-          console.error(err.message || err);
-        });
+        runOnce()
+          .then((results) => {
+            const history = addReadingsToHistory(
+              loadHistory(HISTORY_PATH),
+              config.schedule.timeZone,
+              results
+            );
+            if (shouldWriteHistory && results.length) {
+              saveHistory(HISTORY_PATH, history);
+            }
+            if (args.format === "ascii") {
+              outputSocHistoryGraphs(history, config, HISTORY_GRAPH_DAYS);
+            }
+          })
+          .catch((err) => {
+            console.error(err.message || err);
+          });
       }, intervalMs);
       return;
     }
@@ -1209,6 +1459,13 @@ async function main() {
       config.schedule.minute,
       async () => {
         const results = await runOnce();
+        const history = addReadingsToHistory(loadHistory(HISTORY_PATH), config.schedule.timeZone, results);
+        if (shouldWriteHistory && results.length) {
+          saveHistory(HISTORY_PATH, history);
+        }
+        if (args.format === "ascii") {
+          outputSocHistoryGraphs(history, config, HISTORY_GRAPH_DAYS);
+        }
         logSocSummary(results, args.format);
       }
     );

@@ -80,6 +80,8 @@ Disable notifications and only print output:
 node bm6_bm7.js --map --once --screen
 ```
 
+When using `--map`, the script stores one SoC reading per device per day in `battery_history.json` and prints a 30-day SoC history graph (ascii mode). When running `--once --screen`, it does not update `battery_history.json` (but still prints the graphs).
+
 Override schedule with a fixed interval:
 
 ```bash
