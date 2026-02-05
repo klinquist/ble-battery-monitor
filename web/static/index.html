@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bluetooth Battery Monitor</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand__title">Bluetooth Battery Monitor</div>
+        <div class="brand__sub" id="statusText">Loading…</div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="refreshBtn" type="button">Refresh</button>
+        <button class="btn btn--primary" id="saveBtn" type="button">Save Config</button>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="card">
+        <div class="card__header">
+          <h2>Graphs</h2>
+          <div class="row row--wrap">
+            <label class="field field--inline">
+              <span class="field__label">Metric</span>
+              <select id="metricSelect">
+                <option value="voltage" selected>Voltage (V)</option>
+                <option value="voltage_soc">Voltage + SoC</option>
+                <option value="soc">SoC (%)</option>
+                <option value="temperature">Temp (°C)</option>
+              </select>
+            </label>
+            <label class="field field--inline">
+              <span class="field__label">Range</span>
+              <select id="rangeSelect">
+                <option value="7">Last 7 days</option>
+                <option value="30" selected>Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="365">Last 365 days</option>
+                <option value="all">All</option>
+              </select>
+            </label>
+            <label class="field field--inline">
+              <span class="field__label">Auto-refresh</span>
+              <select id="autoRefreshSelect">
+                <option value="off">Off</option>
+                <option value="30">30s</option>
+                <option value="60" selected>60s</option>
+                <option value="300">5m</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="card__body" id="charts"></div>
+      </section>
+
+      <section class="card">
+        <div class="card__header">
+          <h2>Configuration</h2>
+          <div class="hint">
+            The web UI edits <code>config.json</code>. It’s only served on <code>127.0.0.1</code> by default because it
+            includes Pushover secrets.
+          </div>
+        </div>
+        <div class="card__body">
+          <div class="grid grid--2">
+            <div class="card card--sub">
+              <div class="card__header"><h3>Schedule</h3></div>
+              <div class="card__body">
+                <div class="field">
+                  <label class="field__label" for="tzInput">Time zone</label>
+                  <input id="tzInput" type="text" placeholder="America/Los_Angeles" />
+                </div>
+                <div class="row">
+                  <div class="field">
+                    <label class="field__label" for="hourInput">Hour</label>
+                    <input id="hourInput" type="number" min="0" max="23" step="1" />
+                  </div>
+                  <div class="field">
+                    <label class="field__label" for="minuteInput">Minute</label>
+                    <input id="minuteInput" type="number" min="0" max="59" step="1" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card card--sub">
+              <div class="card__header"><h3>Alerts</h3></div>
+              <div class="card__body">
+                <div class="field">
+                  <label class="field__label" for="lowSocInput">Low SoC threshold (%)</label>
+                  <input id="lowSocInput" type="number" min="0" max="100" step="1" />
+                </div>
+                <div class="field">
+                  <label class="checkbox">
+                    <input id="pushEnabledInput" type="checkbox" />
+                    <span>Enable Pushover notifications</span>
+                  </label>
+                </div>
+                <div class="field">
+                  <label class="field__label" for="pushTitleInput">Title</label>
+                  <input id="pushTitleInput" type="text" />
+                </div>
+                <div class="row">
+                  <div class="field">
+                    <label class="field__label" for="pushUserKeyInput">User key</label>
+                    <input id="pushUserKeyInput" type="password" autocomplete="off" />
+                  </div>
+                  <div class="field">
+                    <label class="field__label" for="pushAppTokenInput">App token</label>
+                    <input id="pushAppTokenInput" type="password" autocomplete="off" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card card--sub">
+            <div class="card__header">
+              <h3>Devices</h3>
+              <button class="btn" id="addDeviceBtn" type="button">Add Device</button>
+            </div>
+            <div class="card__body">
+              <div class="table" id="devicesTable"></div>
+            </div>
+          </div>
+
+          <details class="details">
+            <summary>Advanced: raw config JSON</summary>
+            <div class="field">
+              <textarea id="rawConfigText" rows="14" spellcheck="false"></textarea>
+              <div class="hint">Edits here override the form when saving.</div>
+            </div>
+          </details>
+        </div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="/vendor/chart.js/chart.umd.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

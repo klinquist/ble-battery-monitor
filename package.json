@@ -4,11 +4,14 @@
   "description": "Read battery voltage/temperature/SoC from BM6 and BM7 (Ancel BM300 Pro) BLE monitors using Node.js and BlueZ. Supports scheduled daily checks and Pushover notifications.",
   "main": "bm6_bm7.js",
   "scripts": {
+    "web": "node web/server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "Kris Linquist <kris@linquist.net>",
   "license": "MIT",
   "dependencies": {
+    "chart.js": "^4.5.0",
+    "express": "^4.21.2",
     "node-ble": "^1.13.0",
     "node-pushover": "^1.0.0"
   },
