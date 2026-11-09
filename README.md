@@ -1,214 +1,192 @@
-# Bluetooth Battery Monitor (BM6/BM7)
+# BM6 / BM7 Battery Monitor for Home Assistant
 
-I bought a few inexpensive battery monitors from AliExpress and wanted a simple way to check my vehicles' battery health remotely. While there are existing GitHub projects that show how to integrate these devices with ESPHome and Home Assistant, this project keeps things minimal.
+<img src="custom_components/bm_monitor/brand/icon.png" alt="Battery monitor icon" width="80" height="80">
 
-It reads battery voltage, temperature, and state of charge from BM6 or BM7 BLE monitors, including the Ancel BM300 Pro, using Node.js with BlueZ on Linux or CoreBluetooth on macOS. It runs scheduled daily checks and sends a push notification via Pushover when the battery is low.
+Monitor vehicle batteries using **BM6** or **BM7 / Ancel BM300 Pro** Bluetooth
+monitors and **ESPHome Bluetooth proxies**. The integration runs in Home Assistant;
+an ESP32 near your vehicles relays Bluetooth over your network.
 
-## Requirements
+It reads voltage, temperature, the monitor's state-of-charge estimate, and battery
+state. Each monitor is polled **once every 24 hours by default**. You can choose a
+different interval or request a reading with **Update now**.
 
-- Linux with BlueZ (tested on Raspberry Pi/Raspbian) or macOS.
-- Node.js 16+ (macOS works best on an LTS release).
-- Bluetooth adapter enabled.
-- On macOS, grant Bluetooth permission to the terminal/Node process.
+## How it works
+
+```text
+BM6 / BM7 ── Bluetooth LE ── ESPHome ESP32 proxy ── Wi-Fi/Ethernet ── Home Assistant
+```
+
+Home Assistant sends the monitor's commands, decrypts the responses, and creates
+sensor entities. The ESP32 runs standard Bluetooth proxy firmware. One or more
+proxies can cover different parking areas; HA chooses an available route for each
+monitor. You do not select or permanently bind a proxy when adding a battery.
+
+## Features
+
+- BM6 and BM7 / BM300 Pro in one integration, with multiple monitors and proxies.
+- Bluetooth discovery, model preselection, and manual entry by MAC address.
+- Per-monitor polling, defaulting to 24 hours, without a persistent BLE connection.
+- Saved readings and deadlines survive HA restarts, reloads, and proxy replacement.
+- One attempt per poll; failed reads wait the full interval before another attempt.
+- Configurable stale timeout, defaulting to 72 hours after the last successful read.
+- An Update now button and last-success, last-attempt, next-poll, and status sensors.
+
+## Requirements and testing status
+
+- **Home Assistant 2026.10 or newer**.
+- An ESPHome Bluetooth proxy with **active GATT connections enabled**, within range
+  of the monitor, or a compatible local HA Bluetooth adapter.
+- A supported battery monitor. It must be powered from the vehicle battery.
+
+| Monitor | Status |
+| --- | --- |
+| BM6 | Live reads verified on HA 2026.11, including passive scanning and replacement with an external-antenna proxy |
+| BM7 / Ancel BM300 Pro | Implemented and covered by protocol tests; a live test with this integration is still needed |
+
+Automated tests cover both models, scheduling, persistence, entities, configuration
+flows, and HA's routing between simulated remote proxies. ESPHome examples validate
+with ESPHome 2026.10.1. A proxy's usable range depends on antenna placement, walls,
+interference, and the vehicle's metalwork.
 
 ## Install
 
-```bash
-npm install
-```
+### Option 1: HACS custom repository
 
-On Linux, macOS-only dependencies are optional; if `@abandonware/noble` fails to build on Raspberry Pi, `npm install` will still succeed.
+1. Install and configure [HACS](https://www.hacs.xyz/docs/use/) if necessary.
+2. Open **HACS → ⋮ → Custom repositories**.
+3. Add `https://github.com/klinquist/ble-battery-monitor` with type **Integration**.
+4. Find **BM6 / BM7 Battery Monitor**, select it, and download the latest release.
+5. **Restart Home Assistant**.
 
-## Config
+This is a HACS custom repository, not a built-in Home Assistant integration or an
+entry in the default HACS catalog.
 
-Create `config.json` and keep it out of git. A sample file is provided at `config.json.default` (copy it and edit).
+### Option 2: Manual installation
 
-```json
-{
-  "schedule": {
-    "timeZone": "America/Los_Angeles",
-    "hour": 8,
-    "minute": 0
-  },
-  "lowSocThreshold": 50,
-  "pushover": {
-    "enabled": true,
-    "userKey": "YOUR_PUSHOVER_USER_KEY",
-    "appToken": "YOUR_PUSHOVER_APP_TOKEN",
-    "title": "Vehicle Battery Low"
-  },
-  "devices": [
-    { "name": "GX460", "type": "bm6", "address": "50:54:7b:5e:81:5e" },
-    { "name": "Multistrada", "type": "bm7", "address": "38:3b:26:b3:82:67" }
-  ]
-}
-```
+1. Download the [latest release](https://github.com/klinquist/ble-battery-monitor/releases/latest).
+   The `bm_monitor.zip` attachment contains a single `bm_monitor` directory.
+2. Extract that directory into Home Assistant's `custom_components` folder.
+3. Confirm the resulting layout includes:
 
-On macOS, CoreBluetooth does not expose MAC addresses. Use the UUID-style `address` values shown by `--scan` or `--generate-config`.
+   ```text
+   <HA configuration directory>/
+     configuration.yaml
+     custom_components/
+       bm_monitor/
+         __init__.py
+         manifest.json
+         ...remaining integration files...
+         brand/icon.png
+         translations/en.json
+   ```
 
-## Generate config interactively
+4. **Restart Home Assistant**.
 
-This scans for BM6/BM7 devices, asks for friendly names, low SoC threshold, and Pushover secrets, then writes `config.json`.
+The configuration directory is the folder containing `configuration.yaml`. File
+editor may display it as **`homeassistant/`**; inside many HA installations it is
+also accessible as **`/config`**. Copy the entire integration folder, including
+`translations` and `brand`. No `configuration.yaml` entry is required.
 
-```bash
-node bm6_bm7.js --generate-config
-```
+## Set up a Bluetooth proxy
 
-## Usage
+Follow the [ESPHome Bluetooth proxy guide](docs/bluetooth-proxy.md) to flash an
+ESP32, add it to Home Assistant, and choose scanning settings. It includes the
+supplied YAML examples, external antenna advice, and multiple-proxy setup.
 
-Scan for devices:
+**An online device in ESPHome Device Builder must also be added to Home Assistant's
+ESPHome integration.** Until then, its Bluetooth radio is not available to HA.
 
-```bash
-node bm6_bm7.js --scan
-```
+## Add a battery monitor
 
-Read configured devices once:
+1. Place the proxy near the vehicle for initial testing. Close the manufacturer's
+   app and stop an old reader if either is holding a Bluetooth connection.
+2. In HA, open **Settings → Devices & services → Add integration → BM6 / BM7 Battery
+   Monitor**. A discovery card may also appear automatically.
+3. Select **Choose a discovered BM6 / BM7**, then select the monitor by its MAC
+   address. If the list is empty, use the [discovery checklist](docs/troubleshooting.md#no-monitors-appear-in-discovery).
+4. Enter a vehicle name. The monitor model is preselected from its advertisement;
+   the dropdown is an override. For manual entry, select the correct model yourself.
+5. Keep the **24-hour** interval and **72-hour** unavailable timeout, or adjust both.
+6. Submit. The integration attempts its first reading immediately.
 
-```bash
-node bm6_bm7.js --map --once
-```
+To enter a device manually, choose **Enter a Bluetooth MAC address** and provide
+the physical BLE MAC, such as `AA:BB:CC:DD:EE:FF`. A UUID from macOS CoreBluetooth
+is not a BLE MAC address. Manual entry still requires a proxy or adapter to see the
+monitor's advertisements.
 
-Run daily at the configured time (default 08:00 in config time zone):
+After any temporary active scanning used for discovery, return the proxy to
+**Passive**, then press **Update now** once to verify a fresh reading in that mode.
 
-```bash
-node bm6_bm7.js --map
-```
+## Sensors and controls
 
-Disable notifications and only print output:
+| Entity | Meaning |
+| --- | --- |
+| Voltage | Battery voltage in volts |
+| Temperature | Monitor temperature, converted to HA's preferred unit |
+| State of charge | Percentage reported by the monitor, not a newly calculated curve |
+| Battery state | Monitor-reported OK, low voltage, or charging; an unrecognized code is unknown |
+| Last successful reading | Timestamp of the most recent valid response |
+| Last poll attempt | Timestamp of the most recent attempt, including failures |
+| Next scheduled poll | Next automatic attempt, calculated from the last attempt |
+| Poll status | OK or failed; attributes include the error and configured intervals |
+| Update now | Request one immediate reading and reset this monitor's deadline |
 
-```bash
-node bm6_bm7.js --map --once --screen
-```
+**A displayed measurement may be the last good reading.** Check **Last successful
+reading** and **Poll status** to confirm whether an update succeeded.
 
-When using `--map`, the script stores one SoC reading per device per day in `battery_history.json` and prints a 30-day SoC history graph (ascii mode). When running `--once --screen`, it does not update `battery_history.json` (but still prints the graphs).
+## Polling and battery use
 
-## Local web interface
+Each poll opens one short BLE connection, requests the real-time reading, then
+disconnects. Opening the discovery list does not connect to monitors, and incoming
+advertisements do not cause additional polls. The monitor still performs its own
+firmware-controlled advertising and battery use.
 
-This project includes a small local web UI (served by Node/Express) that:
+- Polling is configurable in each monitor's integration options, in quarter-hour
+  increments from 0.25 to 8760 hours.
+- Failed reads retain the last good values until their stale timeout; there is no
+  automatic rapid retry loop. By default, the next attempt is 24 hours later.
+- Values become unavailable after 72 hours without a successful read by default.
+  The timeout must be at least as long as the polling interval.
+- Restarts and reloads restore the saved deadline. If overdue, HA makes one attempt
+  rather than catching up every missed poll.
+- Manual updates, successful or failed, reset the deadline. Options changes
+  recalculate it from the last attempt; they do not always force a read.
 
-- Lets you edit `config.json` (schedule, thresholds, Pushover, devices).
-- Shows voltage/SoC/temperature graphs over time per vehicle from `battery_history.json` (Chart.js), including an optional Voltage+SoC overlay.
+## Multiple proxies, replacements, and updates
 
-Start it:
+Add each proxy to HA's ESPHome integration with a unique device name. Battery
+monitors are identified by their own MAC addresses, and HA automatically selects a
+reachable proxy. Discovery from two proxies does not create two monitor entries.
 
-```bash
-npm install
-npm run web
-```
+To replace an ESP32, register the new proxy, verify **Update now**, then remove the
+old ESPHome device. Keep the battery-monitor entry: its entities, history, options,
+and saved schedule are retained. A replacement proxy may have a different name.
 
-Then open the printed URL (typically `http://<your-lan-ip>:8787/`, or `http://127.0.0.1:8787/` if you bind to localhost).
+Update this integration through HACS, or replace its entire directory manually,
+then restart HA. Keep the integration entry and its domain `bm_monitor` unchanged.
 
-Notes / details:
+## Migrating from the old Pi / MQTT reader
 
-- The web UI does not read Bluetooth devices itself; it only reads/writes local JSON files:
-  - `config.json` (edited via the UI)
-  - `battery_history.json` (generated by the monitor when you run `node bm6_bm7.js --map`)
-- History granularity is currently **one reading per device per day** (keyed by date), so graphs are daily points.
-- The server binds to **all interfaces** (`0.0.0.0`) by default, so anyone on your LAN can load the page and see/edit `config.json`
-  (including Pushover secrets).
-- If you want to restrict it to the local machine: `node web/server.js --host 127.0.0.1 --port 8787`
-- If you want to view it from another machine, prefer SSH port-forwarding:
-  - `ssh -L 8787:127.0.0.1:8787 pi@your-pi`
-  - Then open `http://127.0.0.1:8787/` locally.
-- If you expose it on your LAN, add network protections (VPN, firewall rules, reverse proxy auth), since there is no login/auth built in.
+This repository now contains the native HA integration and ESPHome examples. The
+old Node.js reader and web UI are available in
+[Git history](https://github.com/klinquist/ble-battery-monitor/tree/0a6841c2c57d93c1efcabcdc8f4b69dd6ed6f764).
 
-### Web API
+Install the integration and verify each monitor, then retire the old service and
+update dashboards and automations to the new HA entities. Existing MQTT entities
+and their history are not automatically merged with the new entities. Any Pushover
+or low-battery alerts should be implemented as Home Assistant automations.
 
-- `GET /api/config` → current config (normalized defaults)
-- `PUT /api/config` → write config (validates and writes `config.json` atomically)
-- `POST /api/config/init` → create `config.json` from `config.json.default` if missing
-- `GET /api/history` → current history from `battery_history.json`
+## Troubleshooting, development, and credits
 
-Override schedule with a fixed interval:
+- [Discovery, connection failures, range, scanning modes, and logs](docs/troubleshooting.md)
+- [Development, tests, and release process](docs/development.md)
+- [Changelog](CHANGELOG.md)
 
-```bash
-node bm6_bm7.js --map --interval-hours 24
-```
+Protocol work builds on [JeffWDH/bm6-battery-monitor](https://github.com/JeffWDH/bm6-battery-monitor),
+[Rafciq/BM6](https://github.com/Rafciq/BM6),
+[derekpurdy/BM7](https://github.com/derekpurdy/BM7), and the earlier reader in this
+repository. This integration's code is maintained here under the [MIT license](LICENSE).
 
-Direct read (no config file needed):
-
-```bash
-node bm6_bm7.js --bm6 AA:BB:CC:DD:EE:FF --bm7 11:22:33:44:55:66
-```
-
-### CLI arguments
-
-- `--scan`: Scan for BM6/BM7 devices.
-- `--generate-config`: Create `config.json` interactively.
-- `--map`: Use devices defined in `config.json`.
-- `--once`: Run one map read and exit.
-- `--interval-hours <h>`: Fixed interval override for `--map`.
-- `--format ascii|json`: Output format (default: ascii).
-- `--scan-ms <ms>`: Scan duration for `--scan` and `--generate-config`.
-- `--connect-scan-ms <ms>`: Scan duration when connecting to known addresses.
-- `--read-timeout-ms <ms>`: Timeout waiting for a reading.
-- `--screen`: Print results only; disable Pushover notifications.
-- `--bm6 <addr>` / `--bm7 <addr>`: Direct read of one BM6 and one BM7.
-
-## Raspberry Pi setup (BlueZ + DBus)
-
-### 1) Disable privacy in BlueZ
-
-Edit `/etc/bluetooth/main.conf`:
-
-```
-[General]
-Privacy = off
-```
-
-### 2) Allow DBus access for node-ble
-
-```bash
-echo '<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN"
-  "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig>
-  <policy user="__USERID__">
-   <allow own="org.bluez"/>
-    <allow send_destination="org.bluez"/>
-    <allow send_interface="org.bluez.GattCharacteristic1"/>
-    <allow send_interface="org.bluez.GattDescriptor1"/>
-    <allow send_interface="org.freedesktop.DBus.ObjectManager"/>
-    <allow send_interface="org.freedesktop.DBus.Properties"/>
-  </policy>
-</busconfig>' | sed "s/__USERID__/$(id -un)/" | sudo tee /etc/dbus-1/system.d/node-ble.conf > /dev/null
-```
-
-### 3) Restart services
-
-```bash
-sudo systemctl restart dbus
-sudo systemctl restart bluetooth
-```
-
-If Bluetooth fails to start on older kernels, disable the SAP plugin:
-
-```bash
-sudo systemctl edit bluetooth
-```
-
-```
-[Service]
-ExecStart=
-ExecStart=/usr/lib/bluetooth/bluetoothd --noplugin=sap
-```
-
-Then:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart bluetooth
-```
-
-## Run with PM2
-
-```bash
-pm2 start bm6_bm7.js --name "BatteryMonitor" -- --map
-pm2 start web/server.js --name "BatteryMonitorWeb" -- --port 8787
-pm2 save
-```
-
-## Troubleshooting
-
-- If you see DBus permission errors, double-check the DBus policy file and restart `dbus` and `bluetooth`.
-- If devices are not found, run `--scan` and verify addresses in `config.json`.
-- For long-term reliability, keep the process running (PM2 or systemd).
+For the underlying transport, see the official
+[HA Bluetooth](https://www.home-assistant.io/integrations/bluetooth/) and
+[ESPHome Bluetooth proxy](https://esphome.io/components/bluetooth_proxy/) documentation.

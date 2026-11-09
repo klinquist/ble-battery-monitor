@@ -1,0 +1,8 @@
+# Flash this configuration to the second physical ESP32. Copy battery-proxy.yaml
+# alongside this file; the package shares its radio, Wi-Fi, API, and board settings.
+substitutions:
+  name: battery-proxy-other-area
+  friendly_name: Battery Proxy Other Area
+
+packages:
+  battery_proxy: !include battery-proxy.yaml

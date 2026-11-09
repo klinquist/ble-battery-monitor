@@ -1,0 +1,8 @@
+# Verified together on Python 3.14. Runtime BLE/crypto packages come from HA.
+homeassistant==2026.10.4
+pytest-homeassistant-custom-component==0.13.375
+ruff==0.17.3
+# Integration requirements imported by HA's Bluetooth and USB components.
+aiousbwatcher==1.1.2
+serialx==1.11.0
+dbus-fast==5.0.22

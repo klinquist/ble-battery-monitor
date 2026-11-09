@@ -1,0 +1,114 @@
+{
+  "title": "BM6 / BM7 Battery Monitor",
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Add a battery monitor",
+        "menu_options": {
+          "discovered": "Choose a discovered BM6 / BM7",
+          "manual": "Enter a Bluetooth MAC address"
+        }
+      },
+      "discovered": {
+        "title": "Choose a battery monitor",
+        "description": "Monitors seen by any connected Bluetooth proxy or adapter appear here. If the list is empty, confirm the proxy is added to Home Assistant and temporarily enable Active scanning for discovery. Opening this list does not connect to monitors.",
+        "data": {
+          "address": "Battery monitor"
+        }
+      },
+      "manual": {
+        "title": "Add a battery monitor",
+        "description": "The first reading is requested after you add the monitor. Later reads follow the configured interval. Automatic retries are disabled to conserve battery power.",
+        "data": {
+          "address": "Bluetooth MAC address",
+          "name": "Vehicle / battery name",
+          "model": "Monitor model",
+          "poll_interval_hours": "Polling interval (hours)",
+          "stale_after_hours": "Mark readings unavailable after (hours)"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "Configure battery monitor",
+        "description": "Monitor: {address}. A first reading is requested after adding it. Subsequent reads default to once every 24 hours; discovery does not trigger additional reads.",
+        "data": {
+          "name": "Vehicle / battery name",
+          "model": "Monitor model",
+          "poll_interval_hours": "Polling interval (hours)",
+          "stale_after_hours": "Mark readings unavailable after (hours)"
+        },
+        "data_description": {
+          "model": "Preselected from the Bluetooth advertisement. Change it only if the detected model is incorrect."
+        }
+      }
+    },
+    "error": {
+      "invalid_address": "Enter a Bluetooth MAC address such as AA:BB:CC:DD:EE:FF.",
+      "stale_before_poll": "The unavailable timeout must be at least as long as the polling interval."
+    },
+    "abort": {
+      "already_configured": "This monitor has already been added, including discoveries from another proxy.",
+      "no_devices_found": "No unconfigured BM6/BM7 monitors were found. Confirm your proxy is connected in Home Assistant's ESPHome integration and close to the vehicle. Temporarily enable Active scanning to discover names, or add the monitor using its MAC address.",
+      "unsupported_device": "This advertisement does not identify a connectable BM6/BM7 monitor."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Battery monitor settings",
+        "description": "The next poll is calculated from the last attempt. Changing settings does not force a new reading unless that deadline has passed. Use Update now to request an immediate reading.",
+        "data": {
+          "model": "Monitor model",
+          "poll_interval_hours": "Polling interval (hours)",
+          "stale_after_hours": "Mark readings unavailable after (hours)"
+        }
+      }
+    },
+    "error": {
+      "stale_before_poll": "The unavailable timeout must be at least as long as the polling interval."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "voltage": {
+        "name": "Voltage"
+      },
+      "temperature": {
+        "name": "Temperature"
+      },
+      "soc": {
+        "name": "State of charge"
+      },
+      "state": {
+        "name": "Battery state",
+        "state": {
+          "ok": "OK",
+          "low_voltage": "Low voltage",
+          "charging": "Charging"
+        }
+      },
+      "last_success": {
+        "name": "Last successful reading"
+      },
+      "last_attempt": {
+        "name": "Last poll attempt"
+      },
+      "next_poll": {
+        "name": "Next scheduled poll"
+      },
+      "poll_status": {
+        "name": "Poll status",
+        "state": {
+          "never_read": "Never read",
+          "ok": "OK",
+          "error": "Failed"
+        }
+      }
+    },
+    "button": {
+      "update_now": {
+        "name": "Update now"
+      }
+    }
+  }
+}

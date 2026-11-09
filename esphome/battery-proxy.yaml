@@ -1,0 +1,38 @@
+# Generic ESP32-WROOM development board. Adjust esp32.board for your hardware.
+# See docs/bluetooth-proxy.md for flashing, HA registration, and initial discovery.
+substitutions:
+  name: battery-proxy-garage
+  friendly_name: Battery Proxy Garage
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+logger:
+
+api:
+  encryption:
+    key: !secret battery_proxy_api_key
+
+ota:
+  - platform: esphome
+    # ESPHome 2026.10+: reuse the API key for encrypted OTA updates.
+    encryption: {}
+
+esp32_ble_tracker:
+  scan_parameters:
+    # Passive scanning listens to advertisements without requesting scan replies.
+    # This does NOT disable GATT connections initiated by HA at polling time.
+    active: false
+
+bluetooth_proxy:
+  active: true
